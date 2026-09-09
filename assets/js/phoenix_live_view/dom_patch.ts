@@ -603,7 +603,7 @@ export default class DOMPatch {
     this.transitionPendingRemoves();
 
     if (externalFormTriggered) {
-      liveSocket.unload();
+      liveSocket.markNavigationPending();
       // check for submitter and inject it as hidden input for external submit;
       // In theory, it could happen that the stored submitter is outdated and doesn't
       // exist in the DOM any more, but this is unlikely, so we just accept it for now.

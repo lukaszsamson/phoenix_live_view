@@ -139,6 +139,12 @@ defmodule Phoenix.LiveViewTest.E2E.SubmitController do
   def submit(conn, params) do
     send_resp(conn, 200, Phoenix.json_library().encode!(params))
   end
+
+  def download(conn, _params) do
+    conn
+    |> put_resp_header("content-disposition", ~s(attachment; filename="download.txt"))
+    |> text("download")
+  end
 end
 
 defmodule Phoenix.LiveViewTest.E2E.Router do
@@ -299,6 +305,7 @@ defmodule Phoenix.LiveViewTest.E2E.Router do
     end
 
     post "/submit", SubmitController, :submit
+    get "/download", SubmitController, :download
   end
 
   post "/eval", Phoenix.LiveViewTest.E2E.EvalController, :eval

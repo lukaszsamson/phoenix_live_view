@@ -13,6 +13,7 @@ import {
   PHX_SERVER_ERROR_CLASS,
   PHX_HAS_FOCUSED,
   MAX_CHILD_JOIN_ATTEMPTS,
+  BEFORE_UNLOAD_LOADER_TIMEOUT,
 } from "phoenix_live_view/constants";
 
 import {
@@ -1412,6 +1413,34 @@ describe("View", function () {
     jest.runAllTimers();
     expect(status.style.display).toBe("none");
     done();
+  });
+
+  test("uses the quiet unload loader while navigation is pending", () => {
+    liveSocket = new LiveSocket("/live", Socket);
+    const el = document.querySelector("[data-phx-session]")!;
+    const view = simulateJoinedView(el, liveSocket);
+    const displayError = jest.spyOn(view, "displayError");
+    const showLoader = jest.spyOn(view, "showLoader");
+    liveSocket.markNavigationPending();
+
+    view.onError("closed while navigating");
+
+    expect(showLoader).toHaveBeenCalledWith(BEFORE_UNLOAD_LOADER_TIMEOUT);
+    expect(displayError).not.toHaveBeenCalled();
+    expect(view.isDestroyed()).toBe(false);
+  });
+
+  test("shows disconnect errors after a navigation hint is cleared", () => {
+    liveSocket = new LiveSocket("/live", Socket);
+    const el = document.querySelector("[data-phx-session]")!;
+    const view = simulateJoinedView(el, liveSocket);
+    const displayError = jest.spyOn(view, "displayError");
+    liveSocket.markNavigationPending();
+    liveSocket.clearNavigationPending();
+
+    view.onError("closed after navigation was cancelled");
+
+    expect(displayError).toHaveBeenCalled();
   });
 
   test("join", async () => {

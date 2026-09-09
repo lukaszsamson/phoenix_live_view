@@ -159,6 +159,48 @@ const DOM = {
     }
   },
 
+  isNewPageClick(e, currentLocation) {
+    const href =
+      e.target instanceof HTMLAnchorElement
+        ? e.target.getAttribute("href")
+        : null;
+    let url;
+
+    if (e.defaultPrevented || href === null || this.wantsNewTab(e)) {
+      return false;
+    }
+    if (href.startsWith("mailto:") || href.startsWith("tel:")) {
+      return false;
+    }
+    if (e.target.isContentEditable) {
+      return false;
+    }
+
+    try {
+      url = new URL(href);
+    } catch {
+      try {
+        url = new URL(href, currentLocation);
+      } catch {
+        // bad URL, fallback to let browser try it as external
+        return true;
+      }
+    }
+
+    if (
+      url.host === currentLocation.host &&
+      url.protocol === currentLocation.protocol
+    ) {
+      if (
+        url.pathname === currentLocation.pathname &&
+        url.search === currentLocation.search
+      ) {
+        return url.hash === "" && !url.href.endsWith("#");
+      }
+    }
+    return url.protocol.startsWith("http");
+  },
+
   markPhxChildDestroyed(el) {
     if (this.isPhxChild(el)) {
       el.setAttribute(PHX_SESSION, "");

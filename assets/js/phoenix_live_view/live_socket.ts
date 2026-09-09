@@ -61,6 +61,7 @@ import { HooksOptions } from "./view_hook";
 import { RenderingBuffer, ReportingBuffer } from "./rendered/buffer";
 
 const BUFFERS = Object.freeze({ RenderingBuffer, ReportingBuffer });
+const NAVIGATION_PENDING_TIMEOUT = 5000;
 
 /**
  * Returns true if the given element was touched by a user.
@@ -259,6 +260,8 @@ export default class LiveSocket {
 
   /** @internal */
   unloaded = false;
+  private navigationPending: boolean;
+  private navigationPendingTimer: ReturnType<typeof setTimeout> | null;
   private bindingPrefix: string;
   private viewLogger: any;
   private metadataCallbacks: any;
@@ -372,6 +375,8 @@ export default class LiveSocket {
     this.roots = {};
     this.href = window.location.href;
     this.pendingLink = null;
+    this.navigationPending = false;
+    this.navigationPendingTimer = null;
     this.currentLocation = clone(window.location);
     this.hooks = opts.hooks || {};
     this.uploaders = opts.uploaders || {};
@@ -411,13 +416,14 @@ export default class LiveSocket {
       parseInt(this.sessionStorage.getItem(PHX_LV_HISTORY_POSITION) || "0") ||
       0;
     window.addEventListener("pagehide", (_e) => {
-      // Only tear down once the browser confirms the document is being left.
-      this.unload();
+      this.unloaded = true;
     });
     this.socket.onOpen(() => {
       if (this.isUnloaded()) {
         // reload page if being restored from back/forward cache and browser does not emit "pageshow"
         window.location.reload();
+      } else {
+        this.clearNavigationPending();
       }
     });
   }
@@ -633,21 +639,6 @@ export default class LiveSocket {
   // private
 
   /** @internal */
-  unload() {
-    if (this.unloaded) {
-      return;
-    }
-    if (this.main && this.isConnected()) {
-      this.log(this.main, "socket", () => ["disconnect for page nav"], {
-        code: "socket.page-navigation-disconnect",
-      });
-    }
-    this.unloaded = true;
-    this.destroyAllViews();
-    this.disconnect();
-  }
-
-  /** @internal */
   triggerDOM(kind, args) {
     this.domCallbacks[kind](...args);
   }
@@ -846,6 +837,46 @@ export default class LiveSocket {
   }
 
   /** @internal */
+  isNavigationPending() {
+    return this.navigationPending;
+  }
+
+  /** @internal */
+  markNavigationPending() {
+    if (!this.navigationPending && this.main && this.isConnected()) {
+      this.log(this.main, "socket", () => ["page navigation pending"], {
+        code: "socket.page-navigation-pending",
+      });
+    }
+    this.navigationPending = true;
+    this.navigationPendingTimer != null &&
+      clearTimeout(this.navigationPendingTimer);
+    // If the browser keeps this document active, limit this hint to the
+    // navigation attempt so a later, unrelated disconnect is shown normally.
+    this.navigationPendingTimer = setTimeout(
+      () => this.clearNavigationPending(),
+      NAVIGATION_PENDING_TIMEOUT,
+    );
+  }
+
+  /** @internal */
+  clearNavigationPending() {
+    this.navigationPending = false;
+    this.navigationPendingTimer != null &&
+      clearTimeout(this.navigationPendingTimer);
+    this.navigationPendingTimer = null;
+  }
+
+  /** @internal */
+  reconnectAfterNavigation() {
+    this.socket.disconnect(() => {
+      if (!this.isUnloaded() && this.isNavigationPending()) {
+        this.socket.connect();
+      }
+    });
+  }
+
+  /** @internal */
   isConnected() {
     return this.socket.isConnected();
   }
@@ -917,7 +948,7 @@ export default class LiveSocket {
     if (reloadToken) {
       Browser.setCookie(PHX_RELOAD_STATUS, reloadToken, 60);
     }
-    this.unload();
+    this.markNavigationPending();
     Browser.redirect(to, flash);
   }
 
@@ -1124,6 +1155,9 @@ export default class LiveSocket {
     if (this.serverCloseRef === null) {
       // enter failsafe reload if server has gone away intentionally, such as "disconnect" broadcast
       this.serverCloseRef = this.socket.onClose((event) => {
+        if (this.isNavigationPending()) {
+          return this.reconnectAfterNavigation();
+        }
         // failsafe reload if normal closure and we still have a main LV
         if (event && event.code === 1000 && this.main) {
           return this.reloadWithJitter(this.main);
@@ -1140,6 +1174,7 @@ export default class LiveSocket {
     window.addEventListener(
       "pageshow",
       (e) => {
+        this.clearNavigationPending();
         if (e.persisted) {
           // reload page if being restored from back/forward cache
           this.getSocket().disconnect();
@@ -1413,9 +1448,11 @@ export default class LiveSocket {
         this.dispatchClickAway(e, clickStartedAtTarget);
         this.clickStartedAtTarget = null;
 
-        if (!target) {
-          return;
+        if (DOM.isNewPageClick(e, window.location)) {
+          this.markNavigationPending();
         }
+
+        if (!target) return;
 
         const phxEvent = target.getAttribute(click);
         if (!phxEvent) {
@@ -1803,13 +1840,14 @@ export default class LiveSocket {
       const phxChange = e.target.getAttribute(this.binding("change"));
       if (!externalFormSubmitted && phxChange && !phxSubmit) {
         externalFormSubmitted = true;
+        const navigationPending = DOM.isUnloadableFormSubmit(e);
         e.preventDefault();
         this.withinOwners(e.target, (view) => {
           view.disableForm(e.target as HTMLFormElement, phxChange);
           // safari needs next tick
           window.requestAnimationFrame(() => {
-            if (DOM.isUnloadableFormSubmit(e)) {
-              this.unload();
+            if (navigationPending) {
+              this.markNavigationPending();
             }
             (e.target as HTMLFormElement).submit();
           });
@@ -1822,7 +1860,7 @@ export default class LiveSocket {
       const phxEvent = e.target.getAttribute(this.binding("submit"));
       if (!phxEvent) {
         if (DOM.isUnloadableFormSubmit(e)) {
-          this.unload();
+          this.markNavigationPending();
         }
         return;
       }
