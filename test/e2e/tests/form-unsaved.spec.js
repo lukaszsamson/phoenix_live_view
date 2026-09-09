@@ -106,3 +106,41 @@ test("can prevent live navigation and beforeunload", async ({ page }) => {
     "Unsaved value: draft after beforeunload cancel",
   );
 });
+
+test("canceling beforeunload from a regular link keeps the LiveView connected", async ({
+  page,
+}) => {
+  await page.goto("/form-unsaved");
+  await syncLV(page);
+
+  await page.locator("#unsaved-note").fill("draft");
+  await syncLV(page);
+  await page.evaluate(() => {
+    const link = document.createElement("a");
+    link.id = "regular-link";
+    link.href = "/form-unsaved/target";
+    link.textContent = "Leave with regular link";
+    document.body.appendChild(link);
+  });
+
+  const dialogPromise = page.waitForEvent("dialog");
+  const clickPromise = page.locator("#regular-link").click();
+  const dialog = await dialogPromise;
+  expect(dialog.type()).toBe("beforeunload");
+  await dialog.dismiss();
+  await clickPromise;
+
+  await expect(page).toHaveURL("/form-unsaved");
+  expect(
+    await page.evaluate(() => ({
+      connected: window.liveSocket.isConnected(),
+      unloaded: window.liveSocket.isUnloaded(),
+    })),
+  ).toEqual({ connected: true, unloaded: false });
+
+  await page.locator("#unsaved-note").fill("still interactive");
+  await syncLV(page);
+  await expect(page.locator("#unsaved-value")).toHaveText(
+    "Unsaved value: still interactive",
+  );
+});

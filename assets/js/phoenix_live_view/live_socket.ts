@@ -411,7 +411,8 @@ export default class LiveSocket {
       parseInt(this.sessionStorage.getItem(PHX_LV_HISTORY_POSITION) || "0") ||
       0;
     window.addEventListener("pagehide", (_e) => {
-      this.unloaded = true;
+      // Only tear down once the browser confirms the document is being left.
+      this.unload();
     });
     this.socket.onOpen(() => {
       if (this.isUnloaded()) {
@@ -1418,9 +1419,6 @@ export default class LiveSocket {
 
         const phxEvent = target.getAttribute(click);
         if (!phxEvent) {
-          if (DOM.isNewPageClick(e, window.location)) {
-            this.unload();
-          }
           return;
         }
 

@@ -86,6 +86,23 @@ describe("LiveSocket", () => {
     ).toEqual(["container1"]);
   });
 
+  test("only unloads regular link clicks once the page is hidden", () => {
+    liveSocket = new LiveSocket("/live", Socket);
+    liveSocket.bindClick();
+    const unload = jest.spyOn(liveSocket, "unload");
+    const link = document.createElement("a");
+    link.href = "/download";
+    document.body.appendChild(link);
+
+    link.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    expect(unload).not.toHaveBeenCalled();
+
+    window.dispatchEvent(new Event("pagehide"));
+
+    expect(unload).toHaveBeenCalledTimes(1);
+  });
+
   test("viewLogger", async () => {
     const viewLogger = jest.fn();
     liveSocket = new LiveSocket("/live", Socket, { viewLogger });
