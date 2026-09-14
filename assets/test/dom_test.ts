@@ -17,6 +17,15 @@ describe("DOM", () => {
     curTitle && curTitle.remove();
   });
 
+  test("checking an untriggered form does not reset its private submission state", () => {
+    const form = document.createElement("form");
+    DOM.putPrivate(form, "trigger-action-submitted", true);
+    expect(DOM.isNowTriggerFormExternal(form, "phx-trigger-action")).toBe(
+      false,
+    );
+    expect(DOM.private(form, "trigger-action-submitted")).toBe(true);
+  });
+
   describe("wantsNewTab", () => {
     test("case insensitive target", () => {
       const event = e("https://test.local");

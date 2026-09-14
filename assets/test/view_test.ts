@@ -851,6 +851,12 @@ describe("View + DOM", function () {
           view.update(render("reset", false), []);
           view.update(render("retry"), []);
           expect(submit).toHaveBeenCalledTimes(2);
+
+          const previousForm = document.getElementById("form");
+          view.update({ s: ["<div>form removed</div>"] }, []);
+          view.update(render("replacement"), []);
+          expect(document.getElementById("form")).not.toBe(previousForm);
+          expect(submit).toHaveBeenCalledTimes(3);
         } finally {
           submit.mockRestore();
           liveSocket.clearNavigationPending();
@@ -1483,6 +1489,96 @@ describe("View", function () {
     view.onError("closed after navigation was cancelled");
 
     expect(displayError).toHaveBeenCalled();
+  });
+
+  test("displays a suppressed transport error at expiry without a second teardown or error event", () => {
+    jest.useFakeTimers();
+    liveSocket = new LiveSocket("/live", Socket);
+    const view = simulateJoinedView(liveViewDOM(), liveSocket);
+    view.bindChannel();
+    view["channel"]["state"] = "joined";
+    const close = jest.spyOn(view, "onClose");
+    const display = jest.spyOn(view, "displayError");
+    liveSocket.markNavigationPending();
+    liveSocket.socket.triggerChanError();
+    expect(display).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(5000);
+    liveSocket.socket.triggerChanError();
+
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(display).toHaveBeenCalledTimes(1);
+    expect(display).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({ errorKind: "client" }),
+    );
+    liveSocket.clearNavigationPending();
+    expect(display).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(["rejoin", "destroy", "pagehide"])(
+    "does not display a saved error after %s",
+    (outcome) => {
+      jest.useFakeTimers();
+      liveSocket = new LiveSocket("/live", Socket);
+      const view = simulateJoinedView(liveViewDOM(), liveSocket);
+      const display = jest.spyOn(view, "displayError");
+      liveSocket.markNavigationPending();
+      view.onError("temporarily closed");
+
+      if (outcome === "rejoin")
+        view.onJoin({ rendered: { s: [view.el.innerHTML] }, liveview_version });
+      if (outcome === "destroy") view.destroy();
+      if (outcome === "pagehide") window.dispatchEvent(new Event("pagehide"));
+      jest.advanceTimersByTime(5000);
+
+      expect(display).not.toHaveBeenCalled();
+    },
+  );
+
+  test("flushes a child view's error even when the root has no saved error", () => {
+    jest.useFakeTimers();
+    liveSocket = new LiveSocket("/live", Socket);
+    const root = simulateJoinedView(liveViewDOM(), liveSocket);
+    const childEl = tag(
+      "div",
+      {
+        id: "child",
+        "data-phx-session": "child-session",
+        "data-phx-parent-id": root.id,
+      },
+      "child",
+    );
+    root.el.appendChild(childEl);
+    const child = new View(childEl, liveSocket, root);
+    stubChannel(child);
+    root["children"]![root.id][child.id] = child;
+    const rootDisplay = jest.spyOn(root, "displayError");
+    const childDisplay = jest.spyOn(child, "displayError");
+    liveSocket.markNavigationPending();
+    child.onError("child failed");
+
+    jest.advanceTimersByTime(5000);
+
+    expect(rootDisplay).not.toHaveBeenCalled();
+    expect(childDisplay).toHaveBeenCalledTimes(1);
+  });
+
+  test("presents the saved reason when navigation is cleared early", () => {
+    jest.useFakeTimers();
+    liveSocket = new LiveSocket("/live", Socket);
+    const view = simulateJoinedView(liveViewDOM(), liveSocket);
+    const display = jest.spyOn(view, "displayError");
+    const reason = { source: "transport", reason: "connection_closed" };
+    liveSocket.markNavigationPending();
+    view.onError(reason);
+
+    liveSocket.clearNavigationPending();
+
+    expect(display).toHaveBeenCalledWith(expect.any(Array), {
+      unstructuredError: reason,
+      errorKind: "client",
+    });
   });
 
   test("join", async () => {

@@ -108,6 +108,7 @@ export default class View {
   private childJoins: number;
   private loaderTimer: ReturnType<typeof setTimeout> | null;
   private disconnectedTimer: ReturnType<typeof setTimeout> | null;
+  private pendingNavigationError: { reason: any } | null = null;
   private pendingDiffs: { diff: any; events: any; joinCount: number }[];
   private redirect: boolean;
   private href: string | null;
@@ -265,6 +266,7 @@ export default class View {
     this.destroyAllChildren();
     this.destroyPortalElements();
     this.destroyed = true;
+    this.pendingNavigationError = null;
     this.activeUploaders.forEach((uploader) => uploader.cancel());
     this.activeUploaders.clear();
     DOM.deletePrivate(this.el, "view");
@@ -454,6 +456,7 @@ export default class View {
   }
 
   onJoin(resp) {
+    this.pendingNavigationError = null;
     const { rendered, container, liveview_version, pid } = resp;
     if (container) {
       const [tag, attrs] = container;
@@ -1424,21 +1427,34 @@ export default class View {
         context: { attribution: "app" },
       });
     }
-    if (
-      !this.liveSocket.isUnloaded() &&
-      !this.liveSocket.isNavigationPending()
-    ) {
-      if (this.liveSocket.isConnected()) {
-        this.displayError(
-          [PHX_LOADING_CLASS, PHX_ERROR_CLASS, PHX_SERVER_ERROR_CLASS],
-          { unstructuredError: reason, errorKind: "server" },
-        );
-      } else {
-        this.displayError(
-          [PHX_LOADING_CLASS, PHX_ERROR_CLASS, PHX_CLIENT_ERROR_CLASS],
-          { unstructuredError: reason, errorKind: "client" },
-        );
-      }
+    if (this.liveSocket.isUnloaded()) return;
+    if (this.liveSocket.isNavigationPending()) {
+      this.pendingNavigationError = { reason };
+    } else {
+      this.pendingNavigationError = null;
+      this.displayConnectionError(reason);
+    }
+  }
+
+  displayPendingNavigationError() {
+    if (this.isDestroyed() || this.liveSocket.isUnloaded()) return;
+    this.eachChild((child) => child.displayPendingNavigationError());
+    const pending = this.pendingNavigationError;
+    this.pendingNavigationError = null;
+    if (pending) this.displayConnectionError(pending.reason);
+  }
+
+  private displayConnectionError(reason) {
+    if (this.liveSocket.isConnected()) {
+      this.displayError(
+        [PHX_LOADING_CLASS, PHX_ERROR_CLASS, PHX_SERVER_ERROR_CLASS],
+        { unstructuredError: reason, errorKind: "server" },
+      );
+    } else {
+      this.displayError(
+        [PHX_LOADING_CLASS, PHX_ERROR_CLASS, PHX_CLIENT_ERROR_CLASS],
+        { unstructuredError: reason, errorKind: "client" },
+      );
     }
   }
 

@@ -124,6 +124,70 @@ describe("LiveSocket", () => {
     expect(liveSocket.isNavigationPending()).toBe(false);
   });
 
+  test.each([
+    ["pointerdown", true, "", false, false],
+    ["keydown", true, "a", false, false],
+    ["pointerdown", false, "", false, true],
+    ["keydown", false, "a", false, true],
+    ["keydown", true, "a", true, true],
+    ...["Shift", "Control", "Alt", "Meta", "AltGraph"].map((key) => [
+      "keydown",
+      true,
+      key,
+      false,
+      true,
+    ]),
+  ])(
+    "interaction %s trusted=%s key=%s repeat=%s leaves pending=%s",
+    (type, trusted, key, repeat, pending) => {
+      jest.useFakeTimers();
+      liveSocket = new LiveSocket("/live", Socket);
+      liveSocket.bindTopLevelEvents();
+      liveSocket.markNavigationPending();
+      const listener = windowListeners.mock.calls.find(
+        ([name, , capture]) => name === type && capture === true,
+      )[1];
+      // Browser trust cannot be set on constructed events; exercise the
+      // capture listener directly here and use real input in the browser tests.
+      const event = Object.create(
+        type === "keydown" ? KeyboardEvent.prototype : Event.prototype,
+      );
+      Object.defineProperties(event, {
+        isTrusted: { value: trusted },
+        key: { value: key },
+        repeat: { value: repeat },
+        preventDefault: { value: jest.fn() },
+      });
+      listener(event);
+      expect(liveSocket.isNavigationPending()).toBe(pending);
+      expect(event.preventDefault).not.toHaveBeenCalled();
+    },
+  );
+
+  test("a pointerdown clears the old hint and its link click starts a new one", () => {
+    jest.useFakeTimers();
+    liveSocket = new LiveSocket("/live", Socket);
+    liveSocket.bindTopLevelEvents();
+    liveSocket.markNavigationPending();
+    const listener = windowListeners.mock.calls.find(
+      ([name, , capture]) => name === "pointerdown" && capture === true,
+    )[1];
+    listener({ isTrusted: true });
+    expect(liveSocket.isNavigationPending()).toBe(false);
+
+    const link = document.createElement("a");
+    link.href = "/download";
+    document.body.appendChild(link);
+    // Cancel after LiveSocket has classified the click, avoiding jsdom navigation.
+    window.addEventListener("click", (event) => event.preventDefault(), {
+      once: true,
+    });
+    link.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+    expect(liveSocket.isNavigationPending()).toBe(true);
+  });
+
   test("restores a phx-change form when external navigation is cancelled", () => {
     jest.useFakeTimers();
     liveSocket = new LiveSocket("/live", Socket);

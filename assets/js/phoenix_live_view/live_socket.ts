@@ -861,10 +861,14 @@ export default class LiveSocket {
 
   /** @internal */
   clearNavigationPending() {
-    if (this.navigationPendingTimer !== null) {
-      clearTimeout(this.navigationPendingTimer);
-      this.navigationPendingTimer = null;
-    }
+    if (!this.isNavigationPending()) return;
+    clearTimeout(this.navigationPendingTimer!);
+    this.navigationPendingTimer = null;
+    if (this.isUnloaded()) return;
+
+    Object.values(this.roots).forEach((view) =>
+      view.displayPendingNavigationError(),
+    );
     // Firefox can close with code 1000 for an attachment response. Phoenix
     // deliberately does not retry normal closes. Retry just this case once,
     // using the same grace period; explicit disconnect cancels the retry.
@@ -876,7 +880,7 @@ export default class LiveSocket {
         }
       });
     }
-    if (this.isUnloaded() || !this.pendingExternalForm) return;
+    if (!this.pendingExternalForm) return;
 
     const { formEl, ref, phxChange } = this.pendingExternalForm;
     this.pendingExternalForm = null;
@@ -1188,6 +1192,21 @@ export default class LiveSocket {
     }
 
     this.boundTopLevelEvents = true;
+    // Resume before the target processes the interaction, so a restored
+    // readonly input accepts the very first keystroke. A later link click
+    // can mark a new navigation attempt in the usual way.
+    const resumeOnInteraction = (event: PointerEvent | KeyboardEvent) => {
+      if (!event.isTrusted || !this.isNavigationPending()) return;
+      if (
+        event instanceof KeyboardEvent &&
+        (event.repeat ||
+          ["Shift", "Control", "Alt", "Meta", "AltGraph"].includes(event.key))
+      )
+        return;
+      this.clearNavigationPending();
+    };
+    window.addEventListener("pointerdown", resumeOnInteraction, true);
+    window.addEventListener("keydown", resumeOnInteraction, true);
     document.body.addEventListener("click", function () {}); // ensure all click events bubble for mobile Safari
     window.addEventListener(
       "pageshow",

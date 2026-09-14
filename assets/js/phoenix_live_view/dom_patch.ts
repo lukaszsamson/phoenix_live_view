@@ -358,6 +358,9 @@ export default class DOMPatch {
           return true;
         },
         onElUpdated: (el) => {
+          if (!el.hasAttribute(phxTriggerExternal)) {
+            DOM.deletePrivate(el, "trigger-action-submitted");
+          }
           if (DOM.isNowTriggerFormExternal(el, phxTriggerExternal)) {
             externalFormTriggered = el;
           }
@@ -605,6 +608,8 @@ export default class DOMPatch {
     if (externalFormTriggered) {
       // The document may stay active after submit (download or cancelled
       // navigation). Only submit again after phx-trigger-action is reset.
+      // This guard belongs to this element: replacing the form creates a new
+      // form and may submit again, even if it reuses the same id.
       DOM.putPrivate(externalFormTriggered, "trigger-action-submitted", true);
       liveSocket.markNavigationPending();
       // check for submitter and inject it as hidden input for external submit;

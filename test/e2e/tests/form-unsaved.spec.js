@@ -181,6 +181,8 @@ test("attachment responses from regular links and forms keep the LiveView connec
 
   await expect(page).toHaveURL("/form-unsaved");
   expect(await page.evaluate(() => window.liveSocket.isUnloaded())).toBe(false);
+  // Error UI is deferred during the grace period, but is allowed if the
+  // socket is still unavailable when that period expires.
   expect(await page.evaluate(() => window.navigationErrors)).toEqual([]);
   await expect
     .poll(() => page.evaluate(() => window.liveSocket.isConnected()), {
@@ -188,6 +190,10 @@ test("attachment responses from regular links and forms keep the LiveView connec
     })
     .toBe(true);
 
+  await syncLV(page);
+  await page.evaluate(() => {
+    window.navigationErrors = [];
+  });
   downloadPromise = page.waitForEvent("download");
   await page.locator("#attachment-form button").click();
   await downloadPromise;
@@ -208,56 +214,102 @@ test("attachment responses from regular links and forms keep the LiveView connec
   );
 });
 
-test("canceling beforeunload restores an external phx-change form", async ({
-  page,
-}) => {
-  await page.goto("/form-unsaved");
-  await syncLV(page);
-  await page.locator("#unsaved-note").fill("draft");
-  await syncLV(page);
+const formRecovery = {
+  timeout: async (page) => {
+    await expect
+      .poll(
+        () => page.evaluate(() => window.liveSocket.isNavigationPending()),
+        { timeout: 7000 },
+      )
+      .toBe(false);
+    return "draft";
+  },
+  pointerdown: async (page) => {
+    await page.locator("#unsaved-note").click();
+    return "draft";
+  },
+  keydown: async (page) => {
+    await page.locator("#unsaved-note").evaluate((input) => {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+    await page.keyboard.type("!");
+    return "draft!";
+  },
+};
 
-  await page.evaluate(() => {
-    const form = document.querySelector("#unsaved-form");
-    form.action = "/form-unsaved/target";
-    form.method = "get";
-    const button = document.createElement("button");
-    button.id = "external-submit";
-    button.textContent = "Leave with regular form";
-    form.appendChild(button);
+for (const [recovery, resume] of Object.entries(formRecovery)) {
+  test(`canceling beforeunload restores an external phx-change form (${recovery})`, async ({
+    page,
+  }) => {
+    await page.goto("/form-unsaved");
+    await syncLV(page);
+    await page.locator("#unsaved-note").fill("draft");
+    await syncLV(page);
+
+    await page.evaluate(() => {
+      const form = document.querySelector("#unsaved-form");
+      form.action = "/form-unsaved/target";
+      form.method = "get";
+      const button = document.createElement("button");
+      button.id = "external-submit";
+      button.textContent = "Leave with regular form";
+      // Keep the test control outside the LiveView so validation patches
+      // do not remove it when the first keystroke reaches the server.
+      button.setAttribute("form", "unsaved-form");
+      document.body.appendChild(button);
+    });
+
+    const dialogPromise = page.waitForEvent("dialog");
+    const clickPromise = page.locator("#external-submit").click();
+    const dialog = await dialogPromise;
+    expect(dialog.type()).toBe("beforeunload");
+    await dialog.dismiss();
+    await clickPromise;
+
+    await expect(page).toHaveURL("/form-unsaved");
+    expect(
+      await page.evaluate(() => ({
+        connected: window.liveSocket.isConnected(),
+        unloaded: window.liveSocket.isUnloaded(),
+      })),
+    ).toEqual({ connected: true, unloaded: false });
+    expect(
+      await page.evaluate(() => window.liveSocket.isNavigationPending()),
+    ).toBe(true);
+    await expect(page.locator("#unsaved-note")).toHaveAttribute("readonly");
+    const expectedNote = await resume(page);
+    // The first key must land; fill() would wait for readonly to disappear
+    // and could accidentally hide a regression here.
+    await expect(page.locator("#unsaved-note")).toHaveValue(expectedNote);
+    expect(
+      await page.evaluate(() => window.liveSocket.isNavigationPending()),
+    ).toBe(false);
+    await expect(page.locator("#external-submit")).toBeEnabled({
+      timeout: 7000,
+    });
+    await expect(page.locator("#unsaved-note")).not.toHaveAttribute("readonly");
+
+    await syncLV(page);
+    // A validation patch restores the server-rendered form attributes.
+    await page.locator("#unsaved-form").evaluate((form) => {
+      form.action = "/form-unsaved/target";
+      form.method = "get";
+    });
+    const secondDialogPromise = page.waitForEvent("dialog");
+    const secondClickPromise = page.locator("#external-submit").click();
+    const secondDialog = await secondDialogPromise;
+    expect(secondDialog.type()).toBe("beforeunload");
+    await secondDialog.dismiss();
+    await secondClickPromise;
+    await expect(page.locator("#external-submit")).toBeEnabled({
+      timeout: 7000,
+    });
+
+    await page.locator("#unsaved-note").fill("still interactive after cancel");
+    await syncLV(page);
+    await expect(page.locator("#unsaved-value")).toHaveText(
+      "Unsaved value: still interactive after cancel",
+    );
   });
-
-  const dialogPromise = page.waitForEvent("dialog");
-  const clickPromise = page.locator("#external-submit").click();
-  const dialog = await dialogPromise;
-  expect(dialog.type()).toBe("beforeunload");
-  await dialog.dismiss();
-  await clickPromise;
-
-  await expect(page).toHaveURL("/form-unsaved");
-  expect(
-    await page.evaluate(() => ({
-      connected: window.liveSocket.isConnected(),
-      unloaded: window.liveSocket.isUnloaded(),
-    })),
-  ).toEqual({ connected: true, unloaded: false });
-  await expect(page.locator("#external-submit")).toBeEnabled({
-    timeout: 7000,
-  });
-  await expect(page.locator("#unsaved-note")).not.toHaveAttribute("readonly");
-
-  const secondDialogPromise = page.waitForEvent("dialog");
-  const secondClickPromise = page.locator("#external-submit").click();
-  const secondDialog = await secondDialogPromise;
-  expect(secondDialog.type()).toBe("beforeunload");
-  await secondDialog.dismiss();
-  await secondClickPromise;
-  await expect(page.locator("#external-submit")).toBeEnabled({
-    timeout: 7000,
-  });
-
-  await page.locator("#unsaved-note").fill("still interactive after cancel");
-  await syncLV(page);
-  await expect(page.locator("#unsaved-value")).toHaveText(
-    "Unsaved value: still interactive after cancel",
-  );
-});
+}
