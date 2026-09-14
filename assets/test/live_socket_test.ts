@@ -48,6 +48,7 @@ describe("LiveSocket", () => {
   afterEach(() => {
     liveSocket && liveSocket.destroyAllViews();
     liveSocket = null;
+    jest.restoreAllMocks();
     jest.useRealTimers();
   });
 
@@ -110,12 +111,59 @@ describe("LiveSocket", () => {
   test("clears an unconfirmed navigation hint", () => {
     jest.useFakeTimers();
     liveSocket = new LiveSocket("/live", Socket);
+    const onClear = jest.fn();
 
-    liveSocket.markNavigationPending();
+    liveSocket.markNavigationPending(onClear);
     expect(liveSocket.isNavigationPending()).toBe(true);
 
     jest.runAllTimers();
     expect(liveSocket.isNavigationPending()).toBe(false);
+    expect(onClear).toHaveBeenCalledTimes(1);
+  });
+
+  test("restores a phx-change form when external navigation is cancelled", () => {
+    liveSocket = new LiveSocket("/live", Socket);
+    const form = document.createElement("form");
+    form.setAttribute("phx-change", "validate");
+    form.action = "/download";
+    form.innerHTML = '<input name="name"><button>Submit</button>';
+    simulateJoinedView(container(1), liveSocket);
+    container(1)!.appendChild(form);
+    const requestAnimationFrame = jest
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback) => {
+        callback(0);
+        return 1;
+      });
+    const submit = jest
+      .spyOn(HTMLFormElement.prototype, "submit")
+      .mockImplementation(() => {});
+    liveSocket.bindForms();
+
+    form.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
+
+    const input = form.querySelector("input")!;
+    const button = form.querySelector("button")!;
+    expect(liveSocket.isNavigationPending()).toBe(true);
+    expect(input.readOnly).toBe(true);
+    expect(button.disabled).toBe(true);
+
+    liveSocket.recoverFromNavigation();
+
+    expect(liveSocket.isNavigationPending()).toBe(false);
+    expect(input.readOnly).toBe(false);
+    expect(button.disabled).toBe(false);
+
+    form.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
+    expect(submit).toHaveBeenCalledTimes(2);
+    liveSocket.recoverFromNavigation();
+
+    requestAnimationFrame.mockRestore();
+    submit.mockRestore();
   });
 
   test("treats unloadable form submits as a reversible navigation hint", () => {
@@ -373,12 +421,13 @@ describe("LiveSocket", () => {
   });
 
   test("reconnects when a navigation closes the socket but the page remains", () => {
+    jest.useFakeTimers();
     liveSocket = new LiveSocket("/live", Socket);
     const onClose = jest.spyOn(liveSocket.socket, "onClose");
     liveSocket.connect();
     const disconnect = jest
       .spyOn(liveSocket.socket, "disconnect")
-      .mockImplementation((callback: any) => callback());
+      .mockImplementation((callback: any) => callback?.());
     const connect = jest.spyOn(liveSocket.socket, "connect");
     liveSocket.markNavigationPending();
 
@@ -387,8 +436,30 @@ describe("LiveSocket", () => {
     }) => void;
     serverCloseHandler({ code: 1000 });
 
+    expect(disconnect).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(999);
+    expect(disconnect).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(1);
     expect(disconnect).toHaveBeenCalled();
     expect(connect).toHaveBeenCalled();
+  });
+
+  test("does not reconnect when pagehide confirms navigation", () => {
+    jest.useFakeTimers();
+    liveSocket = new LiveSocket("/live", Socket);
+    const onClose = jest.spyOn(liveSocket.socket, "onClose");
+    liveSocket.connect();
+    const resetSocket = jest.spyOn(liveSocket, "resetSocketAfterNavigation");
+    liveSocket.markNavigationPending();
+
+    const serverCloseHandler = onClose.mock.calls[0][0] as (event: {
+      code: number;
+    }) => void;
+    serverCloseHandler({ code: 1001 });
+    window.dispatchEvent(new Event("pagehide"));
+    jest.runAllTimers();
+
+    expect(resetSocket).not.toHaveBeenCalled();
   });
 
   test("channel", async () => {

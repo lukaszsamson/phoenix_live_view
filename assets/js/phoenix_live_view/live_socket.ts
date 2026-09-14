@@ -62,6 +62,7 @@ import { RenderingBuffer, ReportingBuffer } from "./rendered/buffer";
 
 const BUFFERS = Object.freeze({ RenderingBuffer, ReportingBuffer });
 const NAVIGATION_PENDING_TIMEOUT = 5000;
+const NAVIGATION_RECONNECT_DELAY = 1000;
 
 /**
  * Returns true if the given element was touched by a user.
@@ -262,6 +263,8 @@ export default class LiveSocket {
   unloaded = false;
   private navigationPending: boolean;
   private navigationPendingTimer: ReturnType<typeof setTimeout> | null;
+  private navigationReconnectTimer: ReturnType<typeof setTimeout> | null;
+  private navigationPendingCallbacks: Array<() => void>;
   private bindingPrefix: string;
   private viewLogger: any;
   private metadataCallbacks: any;
@@ -377,6 +380,8 @@ export default class LiveSocket {
     this.pendingLink = null;
     this.navigationPending = false;
     this.navigationPendingTimer = null;
+    this.navigationReconnectTimer = null;
+    this.navigationPendingCallbacks = [];
     this.currentLocation = clone(window.location);
     this.hooks = opts.hooks || {};
     this.uploaders = opts.uploaders || {};
@@ -417,6 +422,7 @@ export default class LiveSocket {
       0;
     window.addEventListener("pagehide", (_e) => {
       this.unloaded = true;
+      this.cancelNavigationReconnect();
     });
     this.socket.onOpen(() => {
       if (this.isUnloaded()) {
@@ -842,19 +848,20 @@ export default class LiveSocket {
   }
 
   /** @internal */
-  markNavigationPending() {
+  markNavigationPending(onClear?: () => void) {
     if (!this.navigationPending && this.main && this.isConnected()) {
       this.log(this.main, "socket", () => ["page navigation pending"], {
         code: "socket.page-navigation-pending",
       });
     }
     this.navigationPending = true;
+    if (onClear) this.navigationPendingCallbacks.push(onClear);
     this.navigationPendingTimer != null &&
       clearTimeout(this.navigationPendingTimer);
     // If the browser keeps this document active, limit this hint to the
     // navigation attempt so a later, unrelated disconnect is shown normally.
     this.navigationPendingTimer = setTimeout(
-      () => this.clearNavigationPending(),
+      () => this.recoverFromNavigation(),
       NAVIGATION_PENDING_TIMEOUT,
     );
   }
@@ -865,15 +872,45 @@ export default class LiveSocket {
     this.navigationPendingTimer != null &&
       clearTimeout(this.navigationPendingTimer);
     this.navigationPendingTimer = null;
+    this.cancelNavigationReconnect();
+    const callbacks = this.navigationPendingCallbacks;
+    this.navigationPendingCallbacks = [];
+    callbacks.forEach((callback) => callback());
   }
 
   /** @internal */
   reconnectAfterNavigation() {
-    this.socket.disconnect(() => {
+    if (this.navigationReconnectTimer !== null) return;
+    this.navigationReconnectTimer = setTimeout(() => {
+      this.navigationReconnectTimer = null;
       if (!this.isUnloaded() && this.isNavigationPending()) {
+        this.resetSocketAfterNavigation();
+      }
+    }, NAVIGATION_RECONNECT_DELAY);
+  }
+
+  /** @internal */
+  recoverFromNavigation() {
+    if (this.isUnloaded() || !this.isNavigationPending()) return;
+    const reconnect = !this.isConnected();
+    this.clearNavigationPending();
+    if (reconnect) this.resetSocketAfterNavigation();
+  }
+
+  /** @internal */
+  resetSocketAfterNavigation() {
+    this.socket.disconnect(() => {
+      if (!this.isUnloaded()) {
         this.socket.connect();
       }
     });
+  }
+
+  /** @internal */
+  cancelNavigationReconnect() {
+    this.navigationReconnectTimer != null &&
+      clearTimeout(this.navigationReconnectTimer);
+    this.navigationReconnectTimer = null;
   }
 
   /** @internal */
@@ -1174,12 +1211,13 @@ export default class LiveSocket {
     window.addEventListener(
       "pageshow",
       (e) => {
-        this.clearNavigationPending();
         if (e.persisted) {
           // reload page if being restored from back/forward cache
           this.getSocket().disconnect();
           this.withPageLoading({ to: window.location.href, kind: "redirect" });
           window.location.reload();
+        } else {
+          this.recoverFromNavigation();
         }
       },
       true,
@@ -1843,11 +1881,20 @@ export default class LiveSocket {
         const navigationPending = DOM.isUnloadableFormSubmit(e);
         e.preventDefault();
         this.withinOwners(e.target, (view) => {
-          view.disableForm(e.target as HTMLFormElement, phxChange);
+          const [ref] = view.disableForm(
+            e.target as HTMLFormElement,
+            phxChange,
+          );
+          const restoreForm = () => {
+            externalFormSubmitted = false;
+            view.undoRefs(ref, phxChange);
+          };
           // safari needs next tick
           window.requestAnimationFrame(() => {
             if (navigationPending) {
-              this.markNavigationPending();
+              this.markNavigationPending(restoreForm);
+            } else {
+              restoreForm();
             }
             (e.target as HTMLFormElement).submit();
           });
