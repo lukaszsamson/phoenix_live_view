@@ -1753,7 +1753,7 @@ export default class View {
         );
       }
     }
-    return [newRef, elements.map(({ el }) => el), opts];
+    return [newRef, elements.map(({ el }) => el), opts] as const;
   }
 
   isAcked(ref) {

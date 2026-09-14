@@ -28,6 +28,7 @@ import {
   RELOAD_JITTER_MIN,
   RELOAD_JITTER_MAX,
   PHX_REF_SRC,
+  PHX_REF_LOADING,
   PHX_RELOAD_STATUS,
   PHX_RUNTIME_HOOK,
   PHX_DROP_TARGET_ACTIVE_CLASS,
@@ -261,6 +262,12 @@ export default class LiveSocket {
   /** @internal */
   unloaded = false;
   private navigationPendingTimer: ReturnType<typeof setTimeout> | null = null;
+  private externalFormSubmitted = false;
+  private pendingExternalForm: {
+    formEl: HTMLFormElement;
+    ref: number;
+    phxChange: string;
+  } | null = null;
   private bindingPrefix: string;
   private viewLogger: any;
   private metadataCallbacks: any;
@@ -854,6 +861,21 @@ export default class LiveSocket {
     if (this.navigationPendingTimer !== null) {
       clearTimeout(this.navigationPendingTimer);
       this.navigationPendingTimer = null;
+    }
+    if (this.isUnloaded() || !this.pendingExternalForm) return;
+
+    const { formEl, ref, phxChange } = this.pendingExternalForm;
+    this.pendingExternalForm = null;
+    this.externalFormSubmitted = false;
+    // A rejoin may already have reset the form. Resolve its current owner
+    // and only undo the submit refs that still belong to this attempt.
+    if (
+      formEl.isConnected &&
+      formEl.getAttribute(PHX_REF_LOADING) === `${ref}`
+    ) {
+      this.withinOwners(formEl, (view) =>
+        view.undoRefs(ref, phxChange, [formEl, ...Array.from(formEl.elements)]),
+      );
     }
   }
 
@@ -1806,24 +1828,26 @@ export default class LiveSocket {
   /** @internal */
   bindForms() {
     let iterations = 0;
-    let externalFormSubmitted = false;
 
     // disable forms on submit that track phx-change but perform external submit
     this.on("submit", (e) => {
       if (!(e.target instanceof HTMLFormElement)) return;
       const phxSubmit = e.target.getAttribute(this.binding("submit"));
       const phxChange = e.target.getAttribute(this.binding("change"));
-      if (!externalFormSubmitted && phxChange && !phxSubmit) {
-        externalFormSubmitted = true;
+      if (!this.externalFormSubmitted && phxChange && !phxSubmit) {
+        this.externalFormSubmitted = true;
+        const navigationPending = DOM.isUnloadableFormSubmit(e);
+        const formEl = e.target;
         e.preventDefault();
-        this.withinOwners(e.target, (view) => {
-          view.disableForm(e.target as HTMLFormElement, phxChange);
+        this.withinOwners(formEl, (view) => {
+          const [ref] = view.disableForm(formEl, phxChange);
           // safari needs next tick
           window.requestAnimationFrame(() => {
-            if (DOM.isUnloadableFormSubmit(e)) {
+            if (navigationPending) {
+              this.pendingExternalForm = { formEl, ref, phxChange };
               this.markNavigationPending();
             }
-            (e.target as HTMLFormElement).submit();
+            formEl.submit();
           });
         });
       }

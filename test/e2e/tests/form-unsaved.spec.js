@@ -203,3 +203,57 @@ test("attachment responses from regular links and forms keep the LiveView connec
     "Unsaved value: still interactive after downloads",
   );
 });
+
+test("canceling beforeunload restores an external phx-change form", async ({
+  page,
+}) => {
+  await page.goto("/form-unsaved");
+  await syncLV(page);
+  await page.locator("#unsaved-note").fill("draft");
+  await syncLV(page);
+
+  await page.evaluate(() => {
+    const form = document.querySelector("#unsaved-form");
+    form.action = "/form-unsaved/target";
+    form.method = "get";
+    const button = document.createElement("button");
+    button.id = "external-submit";
+    button.textContent = "Leave with regular form";
+    form.appendChild(button);
+  });
+
+  const dialogPromise = page.waitForEvent("dialog");
+  const clickPromise = page.locator("#external-submit").click();
+  const dialog = await dialogPromise;
+  expect(dialog.type()).toBe("beforeunload");
+  await dialog.dismiss();
+  await clickPromise;
+
+  await expect(page).toHaveURL("/form-unsaved");
+  expect(
+    await page.evaluate(() => ({
+      connected: window.liveSocket.isConnected(),
+      unloaded: window.liveSocket.isUnloaded(),
+    })),
+  ).toEqual({ connected: true, unloaded: false });
+  await expect(page.locator("#external-submit")).toBeEnabled({
+    timeout: 7000,
+  });
+  await expect(page.locator("#unsaved-note")).not.toHaveAttribute("readonly");
+
+  const secondDialogPromise = page.waitForEvent("dialog");
+  const secondClickPromise = page.locator("#external-submit").click();
+  const secondDialog = await secondDialogPromise;
+  expect(secondDialog.type()).toBe("beforeunload");
+  await secondDialog.dismiss();
+  await secondClickPromise;
+  await expect(page.locator("#external-submit")).toBeEnabled({
+    timeout: 7000,
+  });
+
+  await page.locator("#unsaved-note").fill("still interactive after cancel");
+  await syncLV(page);
+  await expect(page.locator("#unsaved-value")).toHaveText(
+    "Unsaved value: still interactive after cancel",
+  );
+});
