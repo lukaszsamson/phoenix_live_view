@@ -1614,6 +1614,30 @@ describe("View", function () {
     expect(redirectSpy).toHaveBeenCalledWith({ to: "/redirected" });
   });
 
+  test("a join failure supersedes the navigation error saved during the grace period", () => {
+    jest.useFakeTimers();
+    liveSocket = new LiveSocket("/live", Socket);
+    const view = simulateJoinedView(liveViewDOM(), liveSocket);
+    const display = jest.spyOn(view, "displayError");
+    const log = jest.spyOn(view, "log").mockImplementation(() => {});
+    const joinError = { reason: "timeout" };
+    liveSocket.markNavigationPending();
+    view.onError("transport closed before rejoin");
+    expect(display).not.toHaveBeenCalled();
+
+    view.onJoinError(joinError);
+    expect(display).toHaveBeenCalledTimes(1);
+    expect(display).toHaveBeenCalledWith(expect.any(Array), {
+      unstructuredError: joinError,
+      errorKind: "server",
+    });
+
+    jest.advanceTimersByTime(5000);
+
+    expect(display).toHaveBeenCalledTimes(1);
+    log.mockRestore();
+  });
+
   test("onJoinError reports join timeouts separately", () => {
     liveSocket = new LiveSocket("/live", Socket);
     const el = liveViewDOM();

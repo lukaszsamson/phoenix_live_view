@@ -1289,6 +1289,7 @@ export default class View {
   }
 
   onJoinError(resp) {
+    this.pendingNavigationError = null;
     if (resp.events) {
       this.liveSocket.dispatchEvents(resp.events);
     }
