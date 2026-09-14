@@ -504,7 +504,7 @@ describe("LiveSocket", () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
-  test("preserves the normal server close fallback during pending navigation", () => {
+  test("preserves the normal server close fallback outside pending navigation", () => {
     liveSocket = new LiveSocket("/live", Socket);
     const onClose = jest.spyOn(liveSocket.socket, "onClose");
     liveSocket.connect();
@@ -512,7 +512,6 @@ describe("LiveSocket", () => {
     const reload = jest
       .spyOn(liveSocket, "reloadWithJitter")
       .mockImplementation(() => {});
-    liveSocket.markNavigationPending();
 
     const serverCloseHandler = onClose.mock.calls[0][0] as (event: {
       code: number;
@@ -520,6 +519,77 @@ describe("LiveSocket", () => {
     serverCloseHandler({ code: 1000 });
 
     expect(reload).toHaveBeenCalledWith(liveSocket.main);
+    liveSocket.main = null;
+  });
+
+  test.each(["retry", "no main", "disconnect", "pagehide", "abnormal"])(
+    "handles a close during navigation: %s",
+    (outcome) => {
+      jest.useFakeTimers();
+      liveSocket = new LiveSocket("/live", Socket);
+      const onClose = jest.spyOn(liveSocket.socket, "onClose");
+      liveSocket.connect();
+      liveSocket.main = outcome === "no main" ? null : {};
+      const reload = jest
+        .spyOn(liveSocket, "reloadWithJitter")
+        .mockImplementation(() => {});
+      const disconnect = jest
+        .spyOn(liveSocket.socket, "disconnect")
+        .mockImplementation((cb: any) => cb?.());
+      const connect = jest
+        .spyOn(liveSocket.socket, "connect")
+        .mockImplementation(() => {});
+      liveSocket.markNavigationPending();
+      const onServerClose = onClose.mock.calls[0][0] as (event: {
+        code: number;
+      }) => void;
+      onServerClose({ code: outcome === "abnormal" ? 1006 : 1000 });
+      if (outcome === "disconnect") liveSocket.disconnect();
+      if (outcome === "pagehide") window.dispatchEvent(new Event("pagehide"));
+      disconnect.mockClear();
+
+      jest.advanceTimersByTime(4999);
+      expect(connect).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1);
+
+      expect(reload).not.toHaveBeenCalled();
+      expect(connect).toHaveBeenCalledTimes(
+        ["retry", "no main"].includes(outcome) ? 1 : 0,
+      );
+      expect(disconnect).toHaveBeenCalledTimes(
+        ["retry", "no main"].includes(outcome) ? 1 : 0,
+      );
+      liveSocket.main = null;
+    },
+  );
+
+  test("explicit disconnect cancels a retry even while transport teardown is pending", () => {
+    jest.useFakeTimers();
+    liveSocket = new LiveSocket("/live", Socket);
+    const onClose = jest.spyOn(liveSocket.socket, "onClose");
+    liveSocket.connect();
+    liveSocket.main = {};
+    let onDisconnected;
+    jest
+      .spyOn(liveSocket.socket, "disconnect")
+      .mockImplementation((cb: any) => {
+        onDisconnected = cb;
+      });
+    const connect = jest
+      .spyOn(liveSocket.socket, "connect")
+      .mockImplementation(() => {});
+    liveSocket.markNavigationPending();
+    const onServerClose = onClose.mock.calls[0][0] as (event: {
+      code: number;
+    }) => void;
+    onServerClose({ code: 1000 });
+    jest.advanceTimersByTime(5000);
+    const retry = onDisconnected;
+
+    liveSocket.disconnect();
+    retry();
+
+    expect(connect).not.toHaveBeenCalled();
     liveSocket.main = null;
   });
 

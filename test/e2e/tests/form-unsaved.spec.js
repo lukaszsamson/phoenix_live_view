@@ -183,7 +183,9 @@ test("attachment responses from regular links and forms keep the LiveView connec
   expect(await page.evaluate(() => window.liveSocket.isUnloaded())).toBe(false);
   expect(await page.evaluate(() => window.navigationErrors)).toEqual([]);
   await expect
-    .poll(() => page.evaluate(() => window.liveSocket.isConnected()))
+    .poll(() => page.evaluate(() => window.liveSocket.isConnected()), {
+      timeout: 7000,
+    })
     .toBe(true);
 
   downloadPromise = page.waitForEvent("download");
@@ -194,7 +196,9 @@ test("attachment responses from regular links and forms keep the LiveView connec
   expect(await page.evaluate(() => window.liveSocket.isUnloaded())).toBe(false);
   expect(await page.evaluate(() => window.navigationErrors)).toEqual([]);
   await expect
-    .poll(() => page.evaluate(() => window.liveSocket.isConnected()))
+    .poll(() => page.evaluate(() => window.liveSocket.isConnected()), {
+      timeout: 7000,
+    })
     .toBe(true);
 
   await page.locator("#unsaved-note").fill("still interactive after downloads");

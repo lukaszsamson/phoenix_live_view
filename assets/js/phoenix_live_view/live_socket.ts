@@ -262,6 +262,7 @@ export default class LiveSocket {
   /** @internal */
   unloaded = false;
   private navigationPendingTimer: ReturnType<typeof setTimeout> | null = null;
+  private navigationClosed = false;
   private externalFormSubmitted = false;
   private pendingExternalForm: {
     formEl: HTMLFormElement;
@@ -423,6 +424,7 @@ export default class LiveSocket {
       this.unloaded = true;
     });
     this.socket.onOpen(() => {
+      this.navigationClosed = false;
       if (this.isUnloaded()) {
         // reload page if being restored from back/forward cache and browser does not emit "pageshow"
         window.location.reload();
@@ -593,6 +595,7 @@ export default class LiveSocket {
    * Disconnects from the LiveView server.
    */
   disconnect(callback?: () => void): void {
+    this.navigationClosed = false;
     this.reloadWithJitterTimer != null &&
       clearTimeout(this.reloadWithJitterTimer);
     // remove the socket close listener to avoid trying to handle
@@ -861,6 +864,17 @@ export default class LiveSocket {
     if (this.navigationPendingTimer !== null) {
       clearTimeout(this.navigationPendingTimer);
       this.navigationPendingTimer = null;
+    }
+    // Firefox can close with code 1000 for an attachment response. Phoenix
+    // deliberately does not retry normal closes. Retry just this case once,
+    // using the same grace period; explicit disconnect cancels the retry.
+    if (this.navigationClosed && !this.isUnloaded()) {
+      this.socket.disconnect(() => {
+        if (this.navigationClosed && !this.isUnloaded()) {
+          this.navigationClosed = false;
+          this.socket.connect();
+        }
+      });
     }
     if (this.isUnloaded() || !this.pendingExternalForm) return;
 
@@ -1159,8 +1173,12 @@ export default class LiveSocket {
       // enter failsafe reload if server has gone away intentionally, such as "disconnect" broadcast
       this.serverCloseRef = this.socket.onClose((event) => {
         // failsafe reload if normal closure and we still have a main LV
-        if (event && event.code === 1000 && this.main) {
-          return this.reloadWithJitter(this.main);
+        if (event && event.code === 1000) {
+          if (this.isNavigationPending()) {
+            this.navigationClosed = true;
+            return;
+          }
+          if (this.main) return this.reloadWithJitter(this.main);
         }
       });
     }
