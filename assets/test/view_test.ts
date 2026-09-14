@@ -819,6 +819,46 @@ describe("View + DOM", function () {
   });
 
   describe("phx-trigger-action", () => {
+    test.each(["added", "updated"])(
+      "submits an %s form only once until the trigger is reset",
+      (kind) => {
+        const liveSocket = new LiveSocket("/live", Socket);
+        const initial =
+          kind === "added"
+            ? "<div>initial</div>"
+            : '<form id="form"><input value="initial"></form>';
+        const view = simulateJoinedView(liveViewDOM(initial), liveSocket);
+        const submit = jest
+          .spyOn(HTMLFormElement.prototype, "submit")
+          .mockImplementation(() => {});
+        const render = (value, triggered = true) => ({
+          s: [
+            `<form id="form" ${triggered ? "phx-trigger-action" : ""}><input value="${value}"></form>`,
+          ],
+        });
+        try {
+          view.update(render("first"), []);
+          expect(submit).toHaveBeenCalledTimes(1);
+          expect(view.isDestroyed()).toBe(false);
+
+          // A later server diff must not submit again while the response is
+          // pending, or after a download/cancel leaves the document active.
+          view.update(render("second"), []);
+          liveSocket.clearNavigationPending();
+          view.update(render("third"), []);
+          expect(submit).toHaveBeenCalledTimes(1);
+
+          view.update(render("reset", false), []);
+          view.update(render("retry"), []);
+          expect(submit).toHaveBeenCalledTimes(2);
+        } finally {
+          submit.mockRestore();
+          liveSocket.clearNavigationPending();
+          liveSocket.destroyAllViews();
+        }
+      },
+    );
+
     test("triggers external submit on updated DOM el", (done) => {
       const liveSocket = new LiveSocket("/live", Socket);
       const el = liveViewDOM();
@@ -839,7 +879,8 @@ describe("View + DOM", function () {
         '<form id="form" phx-submit="submit" phx-trigger-action><input type="text"></form>';
       view.update({ s: [updatedHtml] }, []);
 
-      expect(liveSocket.socket["closeWasClean"]).toBe(true);
+      expect(liveSocket.isUnloaded()).toBe(false);
+      expect(view.isDestroyed()).toBe(false);
       expect(view.el.innerHTML).toBe(
         '<form id="form" phx-submit="submit" phx-trigger-action=""><input type="text"></form>',
       );
@@ -863,7 +904,8 @@ describe("View + DOM", function () {
         '<form id="form" phx-submit="submit" phx-trigger-action><input type="text"></form>';
       view.update({ s: [updatedHtml] }, []);
 
-      expect(liveSocket.socket["closeWasClean"]).toBe(true);
+      expect(liveSocket.isUnloaded()).toBe(false);
+      expect(view.isDestroyed()).toBe(false);
       expect(view.el.innerHTML).toBe(
         '<form id="form" phx-submit="submit" phx-trigger-action=""><input type="text"></form>',
       );

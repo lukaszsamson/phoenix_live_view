@@ -723,9 +723,13 @@ const DOM = {
   },
 
   isNowTriggerFormExternal(el, phxTriggerExternal) {
+    if (!el.getAttribute) return false;
+    if (!el.hasAttribute(phxTriggerExternal)) {
+      this.deletePrivate(el, "trigger-action-submitted");
+      return false;
+    }
     return (
-      el.getAttribute &&
-      el.getAttribute(phxTriggerExternal) !== null &&
+      !this.private(el, "trigger-action-submitted") &&
       document.body.contains(el)
     );
   },

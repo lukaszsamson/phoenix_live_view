@@ -603,6 +603,9 @@ export default class DOMPatch {
     this.transitionPendingRemoves();
 
     if (externalFormTriggered) {
+      // The document may stay active after submit (download or cancelled
+      // navigation). Only submit again after phx-trigger-action is reset.
+      DOM.putPrivate(externalFormTriggered, "trigger-action-submitted", true);
       liveSocket.markNavigationPending();
       // check for submitter and inject it as hidden input for external submit;
       // In theory, it could happen that the stored submitter is outdated and doesn't
