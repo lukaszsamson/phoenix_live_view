@@ -61,6 +61,7 @@ import { HooksOptions } from "./view_hook";
 import { RenderingBuffer, ReportingBuffer } from "./rendered/buffer";
 
 const BUFFERS = Object.freeze({ RenderingBuffer, ReportingBuffer });
+const NAVIGATION_PENDING_TIMEOUT = 5000;
 
 /**
  * Returns true if the given element was touched by a user.
@@ -259,6 +260,7 @@ export default class LiveSocket {
 
   /** @internal */
   unloaded = false;
+  private navigationPendingTimer: ReturnType<typeof setTimeout> | null = null;
   private bindingPrefix: string;
   private viewLogger: any;
   private metadataCallbacks: any;
@@ -632,21 +634,6 @@ export default class LiveSocket {
   // private
 
   /** @internal */
-  unload() {
-    if (this.unloaded) {
-      return;
-    }
-    if (this.main && this.isConnected()) {
-      this.log(this.main, "socket", () => ["disconnect for page nav"], {
-        code: "socket.page-navigation-disconnect",
-      });
-    }
-    this.unloaded = true;
-    this.destroyAllViews();
-    this.disconnect();
-  }
-
-  /** @internal */
   triggerDOM(kind, args) {
     this.domCallbacks[kind](...args);
   }
@@ -845,6 +832,32 @@ export default class LiveSocket {
   }
 
   /** @internal */
+  isNavigationPending() {
+    return this.navigationPendingTimer !== null;
+  }
+
+  /** @internal */
+  markNavigationPending() {
+    if (this.navigationPendingTimer !== null) {
+      clearTimeout(this.navigationPendingTimer);
+    }
+    // A click or submit may download a file or be cancelled. Keep the views
+    // alive and only suppress disconnect errors briefly while leaving.
+    this.navigationPendingTimer = setTimeout(
+      () => this.clearNavigationPending(),
+      NAVIGATION_PENDING_TIMEOUT,
+    );
+  }
+
+  /** @internal */
+  clearNavigationPending() {
+    if (this.navigationPendingTimer !== null) {
+      clearTimeout(this.navigationPendingTimer);
+      this.navigationPendingTimer = null;
+    }
+  }
+
+  /** @internal */
   isConnected() {
     return this.socket.isConnected();
   }
@@ -916,7 +929,7 @@ export default class LiveSocket {
     if (reloadToken) {
       Browser.setCookie(PHX_RELOAD_STATUS, reloadToken, 60);
     }
-    this.unload();
+    this.markNavigationPending();
     Browser.redirect(to, flash);
   }
 
@@ -1412,17 +1425,14 @@ export default class LiveSocket {
         this.dispatchClickAway(e, clickStartedAtTarget);
         this.clickStartedAtTarget = null;
 
-        if (!target) {
-          return;
+        if (DOM.isNewPageClick(e, window.location)) {
+          this.markNavigationPending();
         }
 
+        if (!target) return;
+
         const phxEvent = target.getAttribute(click);
-        if (!phxEvent) {
-          if (DOM.isNewPageClick(e, window.location)) {
-            this.unload();
-          }
-          return;
-        }
+        if (!phxEvent) return;
 
         if (target.getAttribute("href") === "#") {
           e.preventDefault();
@@ -1811,7 +1821,7 @@ export default class LiveSocket {
           // safari needs next tick
           window.requestAnimationFrame(() => {
             if (DOM.isUnloadableFormSubmit(e)) {
-              this.unload();
+              this.markNavigationPending();
             }
             (e.target as HTMLFormElement).submit();
           });
@@ -1824,7 +1834,7 @@ export default class LiveSocket {
       const phxEvent = e.target.getAttribute(this.binding("submit"));
       if (!phxEvent) {
         if (DOM.isUnloadableFormSubmit(e)) {
-          this.unload();
+          this.markNavigationPending();
         }
         return;
       }
