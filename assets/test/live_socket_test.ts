@@ -48,6 +48,7 @@ describe("LiveSocket", () => {
   afterEach(() => {
     liveSocket && liveSocket.destroyAllViews();
     liveSocket = null;
+    jest.useRealTimers();
   });
 
   afterAll(() => {
@@ -60,6 +61,7 @@ describe("LiveSocket", () => {
     expect(liveSocket.socket.onOpen).toBeDefined();
     expect(liveSocket.viewLogger).toBeUndefined();
     expect(liveSocket.unloaded).toBe(false);
+    expect(liveSocket.isNavigationPending()).toBe(false);
     expect(liveSocket.bindingPrefix).toBe("phx-");
     expect(liveSocket.prevActive).toBe(null);
     expect(liveSocket.cascadePhxRemoveOnNavigation).toBe(true);
@@ -84,6 +86,86 @@ describe("LiveSocket", () => {
     expect(
       liveSocket.phxRemoveElementsForNavigation(mainEl).map((el) => el.id),
     ).toEqual(["container1"]);
+  });
+
+  test("regular link clicks only hint at navigation, nothing is torn down", () => {
+    liveSocket = new LiveSocket("/live", Socket);
+    liveSocket.bindClick();
+    const destroyAllViews = jest.spyOn(liveSocket, "destroyAllViews");
+    const disconnect = jest.spyOn(liveSocket, "disconnect");
+    const link = document.createElement("a");
+    link.href = "/download";
+    document.body.appendChild(link);
+
+    link.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    expect(liveSocket.isNavigationPending()).toBe(true);
+    expect(liveSocket.isUnloaded()).toBe(false);
+    expect(destroyAllViews).not.toHaveBeenCalled();
+    expect(disconnect).not.toHaveBeenCalled();
+
+    window.dispatchEvent(new Event("pagehide"));
+
+    expect(liveSocket.isUnloaded()).toBe(true);
+    expect(destroyAllViews).not.toHaveBeenCalled();
+  });
+
+  test("navigation hint expires on its own", () => {
+    jest.useFakeTimers();
+    liveSocket = new LiveSocket("/live", Socket);
+
+    liveSocket.markNavigationPending();
+    expect(liveSocket.isNavigationPending()).toBe(true);
+
+    jest.advanceTimersByTime(4999);
+    expect(liveSocket.isNavigationPending()).toBe(true);
+    jest.advanceTimersByTime(1);
+    expect(liveSocket.isNavigationPending()).toBe(false);
+  });
+
+  test("regular form submits only hint at navigation", () => {
+    liveSocket = new LiveSocket("/live", Socket);
+    liveSocket.bindForms();
+    const disconnect = jest.spyOn(liveSocket, "disconnect");
+    const form = document.createElement("form");
+    form.action = "/download";
+    document.body.appendChild(form);
+
+    form.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
+
+    expect(liveSocket.isNavigationPending()).toBe(true);
+    expect(liveSocket.isUnloaded()).toBe(false);
+    expect(disconnect).not.toHaveBeenCalled();
+  });
+
+  test("reconnects instead of reloading on a clean close while navigation is pending", () => {
+    liveSocket = new LiveSocket("/live", Socket);
+    const onClose = jest.spyOn(liveSocket.socket, "onClose");
+    liveSocket.connect();
+    liveSocket.main = {};
+    const reload = jest
+      .spyOn(liveSocket, "reloadWithJitter")
+      .mockImplementation(() => {});
+    const disconnect = jest
+      .spyOn(liveSocket.socket, "disconnect")
+      .mockImplementation((callback?: any) => callback && callback());
+    const connect = jest.spyOn(liveSocket.socket, "connect");
+    const serverCloseHandler = onClose.mock.calls[0][0] as (event: {
+      code: number;
+    }) => void;
+
+    liveSocket.markNavigationPending();
+    serverCloseHandler({ code: 1000 });
+    expect(reload).not.toHaveBeenCalled();
+    expect(disconnect).toHaveBeenCalled();
+    expect(connect).toHaveBeenCalled();
+
+    window.dispatchEvent(new Event("pagehide"));
+    serverCloseHandler({ code: 1000 });
+    expect(reload).toHaveBeenCalledWith(liveSocket.main);
+    liveSocket.main = null;
   });
 
   test("viewLogger", async () => {

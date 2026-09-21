@@ -62,6 +62,8 @@ import { RenderingBuffer, ReportingBuffer } from "./rendered/buffer";
 
 const BUFFERS = Object.freeze({ RenderingBuffer, ReportingBuffer });
 
+const NAVIGATION_PENDING_TIMEOUT = 5000;
+
 /**
  * Returns true if the given element was touched by a user.
  * @param {HTMLElement} el - The element to check.
@@ -259,6 +261,7 @@ export default class LiveSocket {
 
   /** @internal */
   unloaded = false;
+  private navigationPendingTimer: ReturnType<typeof setTimeout> | null = null;
   private bindingPrefix: string;
   private viewLogger: any;
   private metadataCallbacks: any;
@@ -632,18 +635,30 @@ export default class LiveSocket {
   // private
 
   /** @internal */
-  unload() {
-    if (this.unloaded) {
-      return;
-    }
+  markNavigationPending() {
+    // A regular link click or form submit usually leaves the page, but not
+    // always: the response may be a download or the user may cancel a
+    // beforeunload prompt. So we never tear anything down here. We only
+    // remember that a navigation is likely, so a socket close in the meantime
+    // (Firefox closes the socket as soon as navigation starts) does not flash
+    // the disconnected UI while the page is on its way out. The hint expires
+    // on its own; if the page stays, everything is still connected.
     if (this.main && this.isConnected()) {
-      this.log(this.main, "socket", () => ["disconnect for page nav"], {
-        code: "socket.page-navigation-disconnect",
+      this.log(this.main, "socket", () => ["page navigation pending"], {
+        code: "socket.page-navigation-pending",
       });
     }
-    this.unloaded = true;
-    this.destroyAllViews();
-    this.disconnect();
+    this.navigationPendingTimer != null &&
+      clearTimeout(this.navigationPendingTimer);
+    this.navigationPendingTimer = setTimeout(
+      () => (this.navigationPendingTimer = null),
+      NAVIGATION_PENDING_TIMEOUT,
+    );
+  }
+
+  /** @internal */
+  isNavigationPending() {
+    return this.navigationPendingTimer !== null;
   }
 
   /** @internal */
@@ -916,7 +931,7 @@ export default class LiveSocket {
     if (reloadToken) {
       Browser.setCookie(PHX_RELOAD_STATUS, reloadToken, 60);
     }
-    this.unload();
+    this.markNavigationPending();
     Browser.redirect(to, flash);
   }
 
@@ -1125,6 +1140,13 @@ export default class LiveSocket {
       this.serverCloseRef = this.socket.onClose((event) => {
         // failsafe reload if normal closure and we still have a main LV
         if (event && event.code === 1000 && this.main) {
+          // Firefox closes the socket cleanly as soon as a navigation starts,
+          // even when the response turns out to be a download and the page
+          // stays. Phoenix does not retry clean closes, so reconnect ourselves
+          // instead of reloading the page from under the user.
+          if (this.isNavigationPending() && !this.isUnloaded()) {
+            return this.socket.disconnect(() => this.socket.connect());
+          }
           return this.reloadWithJitter(this.main);
         }
       });
@@ -1412,14 +1434,10 @@ export default class LiveSocket {
         this.dispatchClickAway(e, clickStartedAtTarget);
         this.clickStartedAtTarget = null;
 
-        if (!target) {
-          return;
-        }
-
-        const phxEvent = target.getAttribute(click);
-        if (!phxEvent) {
+        const phxEvent = target && target.getAttribute(click);
+        if (!target || !phxEvent) {
           if (DOM.isNewPageClick(e, window.location)) {
-            this.unload();
+            this.markNavigationPending();
           }
           return;
         }
@@ -1811,7 +1829,7 @@ export default class LiveSocket {
           // safari needs next tick
           window.requestAnimationFrame(() => {
             if (DOM.isUnloadableFormSubmit(e)) {
-              this.unload();
+              this.markNavigationPending();
             }
             (e.target as HTMLFormElement).submit();
           });
@@ -1824,7 +1842,7 @@ export default class LiveSocket {
       const phxEvent = e.target.getAttribute(this.binding("submit"));
       if (!phxEvent) {
         if (DOM.isUnloadableFormSubmit(e)) {
-          this.unload();
+          this.markNavigationPending();
         }
         return;
       }

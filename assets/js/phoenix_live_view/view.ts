@@ -1409,7 +1409,7 @@ export default class View {
     }
     this.destroyAllChildren();
     this.liveSocket.dropActiveElement(this);
-    if (this.liveSocket.isUnloaded()) {
+    if (this.liveSocket.isUnloaded() || this.liveSocket.isNavigationPending()) {
       this.showLoader(BEFORE_UNLOAD_LOADER_TIMEOUT);
     }
   }
@@ -1424,7 +1424,10 @@ export default class View {
         context: { attribution: "app" },
       });
     }
-    if (!this.liveSocket.isUnloaded()) {
+    if (
+      !this.liveSocket.isUnloaded() &&
+      !this.liveSocket.isNavigationPending()
+    ) {
       if (this.liveSocket.isConnected()) {
         this.displayError(
           [PHX_LOADING_CLASS, PHX_ERROR_CLASS, PHX_SERVER_ERROR_CLASS],

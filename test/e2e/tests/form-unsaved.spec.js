@@ -106,3 +106,105 @@ test("can prevent live navigation and beforeunload", async ({ page }) => {
     "Unsaved value: draft after beforeunload cancel",
   );
 });
+
+test("canceling beforeunload from a regular link keeps the LiveView connected", async ({
+  page,
+}) => {
+  await page.goto("/form-unsaved");
+  await syncLV(page);
+
+  await page.locator("#unsaved-note").fill("draft");
+  await syncLV(page);
+  await page.evaluate(() => {
+    const link = document.createElement("a");
+    link.id = "regular-link";
+    link.href = "/form-unsaved/target";
+    link.textContent = "Leave with regular link";
+    document.body.appendChild(link);
+  });
+
+  const dialogPromise = page.waitForEvent("dialog");
+  const clickPromise = page.locator("#regular-link").click();
+  const dialog = await dialogPromise;
+  expect(dialog.type()).toBe("beforeunload");
+  await dialog.dismiss();
+  await clickPromise;
+
+  await expect(page).toHaveURL("/form-unsaved");
+  expect(
+    await page.evaluate(() => ({
+      connected: window.liveSocket.isConnected(),
+      unloaded: window.liveSocket.isUnloaded(),
+    })),
+  ).toEqual({ connected: true, unloaded: false });
+
+  await page.locator("#unsaved-note").fill("still interactive");
+  await syncLV(page);
+  await expect(page.locator("#unsaved-value")).toHaveText(
+    "Unsaved value: still interactive",
+  );
+});
+
+test("attachment responses from regular links and forms keep the LiveView connected", async ({
+  page,
+}) => {
+  await page.goto("/form-unsaved");
+  await syncLV(page);
+
+  await page.evaluate(() => {
+    window.navigationErrors = [];
+    window.addEventListener("phx:page-loading-start", (event) => {
+      if (event.detail.kind === "error") {
+        window.navigationErrors.push(event.detail);
+      }
+    });
+
+    const link = document.createElement("a");
+    link.id = "attachment-link";
+    link.href = "/download";
+    link.textContent = "Download from link";
+    document.body.appendChild(link);
+
+    const form = document.createElement("form");
+    form.id = "attachment-form";
+    form.action = "/download";
+    form.method = "get";
+    const button = document.createElement("button");
+    button.textContent = "Download from form";
+    form.appendChild(button);
+    document.body.appendChild(form);
+  });
+
+  let downloadPromise = page.waitForEvent("download");
+  await page.locator("#attachment-link").click();
+  await downloadPromise;
+
+  await expect(page).toHaveURL("/form-unsaved");
+  expect(await page.evaluate(() => window.liveSocket.isUnloaded())).toBe(false);
+  expect(await page.evaluate(() => window.navigationErrors)).toEqual([]);
+  await expect
+    .poll(() => page.evaluate(() => window.liveSocket.isConnected()), {
+      timeout: 7000,
+    })
+    .toBe(true);
+
+  await syncLV(page);
+  downloadPromise = page.waitForEvent("download");
+  await page.locator("#attachment-form button").click();
+  await downloadPromise;
+
+  await expect(page).toHaveURL("/form-unsaved");
+  expect(await page.evaluate(() => window.liveSocket.isUnloaded())).toBe(false);
+  expect(await page.evaluate(() => window.navigationErrors)).toEqual([]);
+  await expect
+    .poll(() => page.evaluate(() => window.liveSocket.isConnected()), {
+      timeout: 7000,
+    })
+    .toBe(true);
+
+  await page.locator("#unsaved-note").fill("still interactive after downloads");
+  await syncLV(page);
+  await expect(page.locator("#unsaved-value")).toHaveText(
+    "Unsaved value: still interactive after downloads",
+  );
+});

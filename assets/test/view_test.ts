@@ -13,6 +13,7 @@ import {
   PHX_SERVER_ERROR_CLASS,
   PHX_HAS_FOCUSED,
   MAX_CHILD_JOIN_ATTEMPTS,
+  BEFORE_UNLOAD_LOADER_TIMEOUT,
 } from "phoenix_live_view/constants";
 
 import {
@@ -818,6 +819,44 @@ describe("View + DOM", function () {
   });
 
   describe("phx-trigger-action", () => {
+    test.each(["added", "updated"])(
+      "submits an %s form only once until the trigger is removed and re-added",
+      (kind) => {
+        const liveSocket = new LiveSocket("/live", Socket);
+        const initial =
+          kind === "added"
+            ? "<div>initial</div>"
+            : '<form id="form"><input value="initial"></form>';
+        const view = simulateJoinedView(liveViewDOM(initial), liveSocket);
+        const submit = jest
+          .spyOn(HTMLFormElement.prototype, "submit")
+          .mockImplementation(() => {});
+        const render = (value, triggered = true) => ({
+          s: [
+            `<form id="form" ${triggered ? "phx-trigger-action" : ""}><input value="${value}"></form>`,
+          ],
+        });
+        try {
+          view.update(render("first"), []);
+          expect(submit).toHaveBeenCalledTimes(1);
+          expect(view.isDestroyed()).toBe(false);
+
+          // the page may stay (download, cancelled navigation), so later
+          // patches that still carry the attribute must not submit again
+          view.update(render("second"), []);
+          view.update(render("third"), []);
+          expect(submit).toHaveBeenCalledTimes(1);
+
+          view.update(render("reset", false), []);
+          view.update(render("retry"), []);
+          expect(submit).toHaveBeenCalledTimes(2);
+        } finally {
+          submit.mockRestore();
+          liveSocket.destroyAllViews();
+        }
+      },
+    );
+
     test("triggers external submit on updated DOM el", (done) => {
       const liveSocket = new LiveSocket("/live", Socket);
       const el = liveViewDOM();
@@ -838,7 +877,9 @@ describe("View + DOM", function () {
         '<form id="form" phx-submit="submit" phx-trigger-action><input type="text"></form>';
       view.update({ s: [updatedHtml] }, []);
 
-      expect(liveSocket.socket["closeWasClean"]).toBe(true);
+      expect(liveSocket.isNavigationPending()).toBe(true);
+      expect(liveSocket.isUnloaded()).toBe(false);
+      expect(view.isDestroyed()).toBe(false);
       expect(view.el.innerHTML).toBe(
         '<form id="form" phx-submit="submit" phx-trigger-action=""><input type="text"></form>',
       );
@@ -862,7 +903,9 @@ describe("View + DOM", function () {
         '<form id="form" phx-submit="submit" phx-trigger-action><input type="text"></form>';
       view.update({ s: [updatedHtml] }, []);
 
-      expect(liveSocket.socket["closeWasClean"]).toBe(true);
+      expect(liveSocket.isNavigationPending()).toBe(true);
+      expect(liveSocket.isUnloaded()).toBe(false);
+      expect(view.isDestroyed()).toBe(false);
       expect(view.el.innerHTML).toBe(
         '<form id="form" phx-submit="submit" phx-trigger-action=""><input type="text"></form>',
       );
@@ -1412,6 +1455,39 @@ describe("View", function () {
     jest.runAllTimers();
     expect(status.style.display).toBe("none");
     done();
+  });
+
+  test("uses the quiet unload loader while navigation is pending", () => {
+    liveSocket = new LiveSocket("/live", Socket);
+    const el = document.querySelector("[data-phx-session]")!;
+    const view = simulateJoinedView(el, liveSocket);
+    const displayError = jest.spyOn(view, "displayError");
+    const showLoader = jest.spyOn(view, "showLoader");
+    liveSocket.markNavigationPending();
+
+    view.onError("closed while navigating");
+
+    expect(showLoader).toHaveBeenCalledWith(BEFORE_UNLOAD_LOADER_TIMEOUT);
+    expect(displayError).not.toHaveBeenCalled();
+    expect(view.isDestroyed()).toBe(false);
+  });
+
+  test("shows disconnect errors once the navigation hint expired", () => {
+    jest.useFakeTimers();
+    try {
+      liveSocket = new LiveSocket("/live", Socket);
+      const el = document.querySelector("[data-phx-session]")!;
+      const view = simulateJoinedView(el, liveSocket);
+      const displayError = jest.spyOn(view, "displayError");
+      liveSocket.markNavigationPending();
+      jest.runAllTimers();
+
+      view.onError("closed after navigation was cancelled");
+
+      expect(displayError).toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test("join", async () => {

@@ -182,6 +182,10 @@ export default class DOMPatch {
     let portalCallbacks: Array<() => void> = [];
 
     let externalFormTriggered: Element | null = null;
+    // forms that already carried phx-trigger-action before this patch; the
+    // page stays alive after an external submit (download, cancelled
+    // navigation), so only a newly added attribute may submit again
+    const alreadyTriggered = new Set<Element>();
 
     const morph = (
       targetContainer,
@@ -358,13 +362,22 @@ export default class DOMPatch {
           return true;
         },
         onElUpdated: (el) => {
-          if (DOM.isNowTriggerFormExternal(el, phxTriggerExternal)) {
+          if (
+            !alreadyTriggered.has(el) &&
+            DOM.isNowTriggerFormExternal(el, phxTriggerExternal)
+          ) {
             externalFormTriggered = el;
           }
           updates.push(el);
           this.maybeReOrderStream(el, false);
         },
         onBeforeElUpdated: (fromEl, toEl) => {
+          if (
+            fromEl.hasAttribute(phxTriggerExternal) &&
+            toEl.hasAttribute(phxTriggerExternal)
+          ) {
+            alreadyTriggered.add(fromEl);
+          }
           DOM.syncPendingAttrs(fromEl, toEl);
           DOM.maintainPrivateHooks(
             fromEl,
@@ -603,7 +616,7 @@ export default class DOMPatch {
     this.transitionPendingRemoves();
 
     if (externalFormTriggered) {
-      liveSocket.unload();
+      liveSocket.markNavigationPending();
       // check for submitter and inject it as hidden input for external submit;
       // In theory, it could happen that the stored submitter is outdated and doesn't
       // exist in the DOM any more, but this is unlikely, so we just accept it for now.
